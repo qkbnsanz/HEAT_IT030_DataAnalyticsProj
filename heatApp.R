@@ -1,13 +1,13 @@
 #======= PHASE 5: H.E.A.T / DASHBOARD ==========
 
-library(shiny)
-library(shinydashboard)
-library(dplyr)
-library(ggplot2)
-library(lubridate)
-library(plotly)
-library(DT)
-library(zoo)
+library(shiny) #app framework, user interaction
+library(shinydashboard) #dashboard (header, sidebar, boxes,body, etc)
+library(dplyr) #data manipulation (filter, group)
+library(ggplot2) #static charts
+library(lubridate) #date and time
+library(plotly) #dynamic charts
+library(DT) #interactive tables (sort rows)
+library(zoo) #rollapply (7-day rolling avg)
 
 #load clean data
 clean_data <- read.csv("clean_data.csv")
@@ -18,9 +18,13 @@ if(!"hour" %in% names(clean_data)) {
   clean_data$hour <- hour(clean_data$datetime)
 }
 
-#load model
+#load models made from phase 4
 if(file.exists("linear_regression_model.rds")) {
-  lm_model <- readRDS("linear_regression_model.rds")
+  lr_model <- readRDS("linear_regression_model.rds")
+}
+
+if(file.exists("classification_model.rds")) {
+  rf_model <- readRDS("classification_model.rds")
 }
 
 #mon-sun week function
@@ -77,7 +81,8 @@ ui <- dashboardPage(
       menuItem("Heat Index Range", tabName = "q2", icon = icon("arrows-alt-h")),
       menuItem("Peak Heat Hour", tabName = "q3", icon = icon("clock")),
       menuItem("Weekly Average", tabName = "q4", icon = icon("chart-line")),
-      menuItem("Geographic Comparison", tabName = "q5", icon = icon("map-marker-alt"))
+      menuItem("Geographic Comparison", tabName = "q5", icon = icon("map-marker-alt")),
+      menuItem("Heat Risk Category Forecast", tabName = "risk", icon = icon("exclamation-triangle"))
     ),
     
     hr(),
@@ -85,7 +90,7 @@ ui <- dashboardPage(
     #city selector
     selectInput("city", "Select City:", 
                 choices = unique(clean_data$city), 
-                selected = "Pasay"),
+                selected = "Quezon City"),
     
     #date picker for daily stats
     dateInput("selected_date", "Select Date for Daily Statistics:",
@@ -385,6 +390,69 @@ ui <- dashboardPage(
             solidHeader = TRUE,
             width = 12,
             DTOutput("q5_table")
+          )
+        )
+      ),
+      
+      #HEAT RISK CLASSIFICATION++++++++++++++++++++++++
+      tabItem(
+        tabName = "risk",
+        h2("Heat Risk Category Forecast by City", style = "color: #a83327;"),
+        p("Random Forest classification predicting PAGASA heat danger categories"),
+        
+        #DAILY SECTION-----------------------
+        h3("Daily Risk Forecast", style = "color: #a83327; margin-top: 20px;"),
+        hr(),
+        fluidRow(
+          valueBoxOutput("risk_daily_summary_box", width = 2),
+          valueBoxOutput("risk_daily_nocaution_count", width = 2),
+          valueBoxOutput("risk_daily_caution_count", width = 2),
+          valueBoxOutput("risk_daily_extreme_caution_count", width = 2),
+          valueBoxOutput("risk_daily_danger_count", width = 2),
+          valueBoxOutput("risk_daily_extreme_danger_count", width = 2)
+        ),
+        fluidRow(
+          box(
+            title = "Daily Risk Distribution", 
+            status = "danger", 
+            solidHeader = TRUE,
+            width = 5,
+            plotlyOutput("risk_daily_plot", height = "450px")
+          ),
+          box(
+            title = "Daily Risk Table (Latest Day Average per City)", 
+            status = "danger", 
+            solidHeader = TRUE,
+            width = 7,
+            DTOutput("risk_daily_table")
+          )
+        ),
+        
+        #WEEKLY---------------------------
+        h3("Weekly Risk Forecast", style = "color: #a83327; margin-top: 40px;"),
+        hr(),
+        fluidRow(
+          valueBoxOutput("risk_weekly_summary_box", width = 2),
+          valueBoxOutput("risk_weekly_nocaution_count", width = 2),
+          valueBoxOutput("risk_weekly_caution_count", width = 2),
+          valueBoxOutput("risk_weekly_extreme_caution_count", width = 2),
+          valueBoxOutput("risk_weekly_danger_count", width = 2),
+          valueBoxOutput("risk_weekly_extreme_danger_count", width = 2)
+        ),
+        fluidRow(
+          box(
+            title = "Weekly Risk Distribution", 
+            status = "danger", 
+            solidHeader = TRUE,
+            width = 5,
+            plotlyOutput("risk_weekly_plot", height = "450px")
+          ),
+          box(
+            title = "Weekly Risk Table (7-Day Average per City)", 
+            status = "danger", 
+            solidHeader = TRUE,
+            width = 7,
+            DTOutput("risk_weekly_table")
           )
         )
       )
@@ -831,16 +899,411 @@ server <- function(input, output, session) {
       datatable(options = list(pageLength = 10, dom = 't'))
   })
   
+  #HEAT RISK CLASSIFICATION+++++++++++++++++++++++++++++
+  #DAILY----------------------------
+  #get daily avg data per city (latest day)
+  daily_avg_data <- reactive({
+    clean_data %>%
+      filter(date == max(date)) %>%
+      group_by(city, province) %>%
+      summarise(
+        avg_temp = round(mean(temperature_c, na.rm = TRUE), 1),
+        avg_humidity = round(mean(humidity_percent, na.rm = TRUE), 1),
+        avg_hour = round(mean(hour, na.rm = TRUE), 0),
+        .groups = "drop"
+      )
+  })
+  
+  #value boxes
+  output$risk_daily_summary_box <- renderValueBox({
+    data <- daily_avg_data()
+    valueBox(value = paste0(nrow(data), " Cities"), 
+             subtitle = "Total Cities (Daily Avg)", 
+             icon = icon("city"), color = "blue")
+  })
+  
+  output$risk_daily_nocaution_count <- renderValueBox({
+    req(exists("rf_model"))
+    data <- daily_avg_data()
+    data$predicted <- predict(rf_model, newdata = data.frame(
+      temperature_c = data$avg_temp,
+      humidity_percent = data$avg_humidity,
+      hour = data$avg_hour
+    ))
+    count <- sum(data$predicted == "No Caution")
+    valueBox(value = paste0(count, " Cities"), 
+             subtitle = "No Caution", 
+             icon = icon("temperature-low"), color = "green")
+  })
+  
+  output$risk_daily_caution_count <- renderValueBox({
+    req(exists("rf_model"))
+    data <- daily_avg_data()
+    data$predicted <- predict(rf_model, newdata = data.frame(
+      temperature_c = data$avg_temp,
+      humidity_percent = data$avg_humidity,
+      hour = data$avg_hour
+    ))
+    count <- sum(data$predicted == "Caution")
+    valueBox(value = paste0(count, " Cities"), 
+             subtitle = "Caution", 
+             icon = icon("thermometer-half"), color = "yellow")
+  })
+  
+  output$risk_daily_extreme_caution_count <- renderValueBox({
+    req(exists("rf_model"))
+    data <- daily_avg_data()
+    data$predicted <- predict(rf_model, newdata = data.frame(
+      temperature_c = data$avg_temp,
+      humidity_percent = data$avg_humidity,
+      hour = data$avg_hour
+    ))
+    count <- sum(data$predicted == "Extreme Caution")
+    valueBox(value = paste0(count, " Cities"), 
+             subtitle = "Extreme Caution", 
+             icon = icon("thermometer-full"), color = "orange")
+  })
+  
+  output$risk_daily_danger_count <- renderValueBox({
+    req(exists("rf_model"))
+    data <- daily_avg_data()
+    data$predicted <- predict(rf_model, newdata = data.frame(
+      temperature_c = data$avg_temp,
+      humidity_percent = data$avg_humidity,
+      hour = data$avg_hour
+    ))
+    count <- sum(data$predicted == "Danger")
+    valueBox(value = paste0(count, " Cities"), 
+             subtitle = "Danger", 
+             icon = icon("exclamation-triangle"), color = "red")
+  })
+  
+  output$risk_daily_extreme_danger_count <- renderValueBox({
+    req(exists("rf_model"))
+    data <- daily_avg_data()
+    data$predicted <- predict(rf_model, newdata = data.frame(
+      temperature_c = data$avg_temp,
+      humidity_percent = data$avg_humidity,
+      hour = data$avg_hour
+    ))
+    count <- sum(data$predicted == "Extreme Danger")
+    valueBox(value = paste0(count, " Cities"), 
+             subtitle = "Extreme Danger", 
+             icon = icon("skull-crossbones"), color = "maroon")
+  })
+  
+  #table
+  output$risk_daily_table <- renderDT({
+    if(!exists("rf_model")) {
+      return(datatable(data.frame(Message = "Classification model not loaded. Run Phase 4 first.")))
+    }
+    
+    data <- daily_avg_data()
+    
+    #using rf_model from phase4
+    data$predicted_category <- predict(rf_model, newdata = data.frame(
+      temperature_c = data$avg_temp,
+      humidity_percent = data$avg_humidity,
+      hour = data$avg_hour
+    ))
+    
+    #calculate heat index for comparison (threshold column)
+    data$calculated_heat_index <- mapply(
+      function(temp, hum) {
+        result <- heat.index(t = temp, rh = hum, 
+                             temperature.metric = "celsius", 
+                             output.metric = "celsius")
+        return(round(result, 1))
+      },
+      data$avg_temp, 
+      data$avg_humidity
+    )
+    
+    data$threshold_category <- sapply(data$calculated_heat_index, get_category)
+    
+    #sort by risk categroy (xtreme danger first)
+    data <- data %>%
+      mutate(risk_order = case_when(
+        predicted_category == "Extreme Danger" ~ 1,
+        predicted_category == "Danger" ~ 2,
+        predicted_category == "Extreme Caution" ~ 3,
+        predicted_category == "Caution" ~ 4,
+        TRUE ~ 5
+      )) %>%
+      arrange(risk_order, desc(calculated_heat_index)) %>%
+      select(-risk_order)
+    
+    datatable(
+      data %>%
+        select(City = city, Province = province,
+               `Temp (°C)` = avg_temp,
+               `Humidity (%)` = avg_humidity,
+               `Heat Index` = calculated_heat_index,
+               `ML Predicted` = predicted_category,
+               `Threshold` = threshold_category),
+      options = list(
+        pageLength = 10, 
+        dom = 'ftp', 
+        ordering = TRUE,
+        scrollX = TRUE,
+        autoWidth = TRUE,
+        columnDefs = list(
+          list(width = '90px', targets = 0),
+          list(width = '80px', targets = 1),
+          list(width = '45px', targets = 2),
+          list(width = '45px', targets = 3),
+          list(width = '45px', targets = 4),
+          list(width = '90px', targets = 5),
+          list(width = '90px', targets = 6)
+        )
+      ),
+      rownames = FALSE,
+    ) %>%
+      formatStyle("ML Predicted",
+                  backgroundColor = styleEqual(
+                    c("Extreme Danger", "Danger", "Extreme Caution", "Caution", "No Caution"),
+                    c("#ff6666", "#ffcccc", "#ffe0b3", "#ffffcc", "#ccffcc")
+                  )
+      )
+  })
+  
+  
+  #plot
+  output$risk_daily_plot <- renderPlotly({
+    if(!exists("rf_model")) return(NULL)
+    
+    data <- daily_avg_data()
+    data$predicted <- predict(rf_model, newdata = data.frame(
+      temperature_c = data$avg_temp,
+      humidity_percent = data$avg_humidity,
+      hour = data$avg_hour
+    ))
+    
+    plot_data <- data %>%
+      group_by(predicted) %>%
+      summarise(count = n(), .groups = "drop") %>%
+      mutate(predicted = factor(predicted, 
+                                levels = c("Extreme Danger", "Danger", "Extreme Caution", "Caution", "No Caution")))
+    
+    colors <- c("Extreme Danger" = "#8B0000", "Danger" = "#ff4444",
+                "Extreme Caution" = "#ff9933", "Caution" = "#ffcc00",
+                "No Caution" = "#66cc66")
+    
+    plot_ly(plot_data, x = ~predicted, y = ~count, type = "bar",
+            marker = list(color = colors[as.character(plot_data$predicted)]),
+            text = ~count, textposition = "auto",
+            hovertemplate = "<b>%{x}</b><br>Cities: %{y}<extra></extra>") %>%
+      layout(title = "Daily Risk Distribution (Latest Day Average)",
+             xaxis = list(title = "PAGASA Category"),
+             yaxis = list(title = "Number of Cities", dtick = 1))
+  })
+  
+  #WEEKLY------------------
+  #get weekly avg per city
+  weekly_avg_data <- reactive({
+    clean_data %>%
+      group_by(city, province) %>%
+      summarise(
+        weekly_avg_temp = round(mean(temperature_c, na.rm = TRUE), 1),
+        weekly_avg_humidity = round(mean(humidity_percent, na.rm = TRUE), 1),
+        weekly_avg_hour = round(mean(hour, na.rm = TRUE), 0),
+        .groups = "drop"
+      )
+  })
+  
+  #value boxes
+  output$risk_weekly_summary_box <- renderValueBox({
+    data <- weekly_avg_data()
+    valueBox(value = paste0(nrow(data), " Cities"), 
+             subtitle = "Total Cities", 
+             icon = icon("city"), color = "blue")
+  })
+  
+  output$risk_weekly_nocaution_count <- renderValueBox({
+    req(exists("rf_model"))
+    data <- weekly_avg_data()
+    data$predicted <- predict(rf_model, newdata = data.frame(
+      temperature_c = data$weekly_avg_temp,
+      humidity_percent = data$weekly_avg_humidity,
+      hour = data$weekly_avg_hour
+    ))
+    count <- sum(data$predicted == "No Caution")
+    valueBox(value = paste0(count, " Cities"), 
+             subtitle = "No Caution", 
+             icon = icon("temperature-low"), color = "green")
+  })
+  
+  output$risk_weekly_caution_count <- renderValueBox({
+    req(exists("rf_model"))
+    data <- weekly_avg_data()
+    data$predicted <- predict(rf_model, newdata = data.frame(
+      temperature_c = data$weekly_avg_temp,
+      humidity_percent = data$weekly_avg_humidity,
+      hour = data$weekly_avg_hour
+    ))
+    count <- sum(data$predicted == "Caution")
+    valueBox(value = paste0(count, " Cities"), 
+             subtitle = "Caution", 
+             icon = icon("thermometer-half"), color = "yellow")
+  })
+  
+  output$risk_weekly_extreme_caution_count <- renderValueBox({
+    req(exists("rf_model"))
+    data <- weekly_avg_data()
+    data$predicted <- predict(rf_model, newdata = data.frame(
+      temperature_c = data$weekly_avg_temp,
+      humidity_percent = data$weekly_avg_humidity,
+      hour = data$weekly_avg_hour
+    ))
+    count <- sum(data$predicted == "Extreme Caution")
+    valueBox(value = paste0(count, " Cities"), 
+             subtitle = "Extreme Caution", 
+             icon = icon("thermometer-full"), color = "orange")
+  })
+  
+  output$risk_weekly_danger_count <- renderValueBox({
+    req(exists("rf_model"))
+    data <- weekly_avg_data()
+    data$predicted <- predict(rf_model, newdata = data.frame(
+      temperature_c = data$weekly_avg_temp,
+      humidity_percent = data$weekly_avg_humidity,
+      hour = data$weekly_avg_hour
+    ))
+    count <- sum(data$predicted == "Danger")
+    valueBox(value = paste0(count, " Cities"), 
+             subtitle = "Danger", 
+             icon = icon("exclamation-triangle"), color = "red")
+  })
+  
+  output$risk_weekly_extreme_danger_count <- renderValueBox({
+    req(exists("rf_model"))
+    data <- weekly_avg_data()
+    data$predicted <- predict(rf_model, newdata = data.frame(
+      temperature_c = data$weekly_avg_temp,
+      humidity_percent = data$weekly_avg_humidity,
+      hour = data$weekly_avg_hour
+    ))
+    count <- sum(data$predicted == "Extreme Danger")
+    valueBox(value = paste0(count, " Cities"), 
+             subtitle = "Extreme Danger", 
+             icon = icon("skull-crossbones"), color = "maroon")
+  })
+  
+  #table
+  output$risk_weekly_table <- renderDT({
+    if(!exists("rf_model")) {
+      return(datatable(data.frame(Message = "Classification model not loaded. Run Phase 4 first.")))
+    }
+    
+    data <- weekly_avg_data()
+    
+    #use rf_model from phase 4
+    data$predicted_category <- predict(rf_model, newdata = data.frame(
+      temperature_c = data$weekly_avg_temp,
+      humidity_percent = data$weekly_avg_humidity,
+      hour = data$weekly_avg_hour
+    ))
+    
+    #calculate heat index for comparison
+    data$calculated_heat_index <- mapply(
+      function(temp, hum) {
+        result <- heat.index(t = temp, rh = hum, 
+                             temperature.metric = "celsius", 
+                             output.metric = "celsius")
+        return(round(result, 1))
+      },
+      data$weekly_avg_temp, 
+      data$weekly_avg_humidity
+    )
+    
+    data$threshold_category <- sapply(data$calculated_heat_index, get_category)
+    
+    #sort by risk categroy (xtreme danger first)
+    data <- data %>%
+      mutate(risk_order = case_when(
+        predicted_category == "Extreme Danger" ~ 1,
+        predicted_category == "Danger" ~ 2,
+        predicted_category == "Extreme Caution" ~ 3,
+        predicted_category == "Caution" ~ 4,
+        TRUE ~ 5
+      )) %>%
+      arrange(risk_order, desc(calculated_heat_index)) %>%
+      select(-risk_order)
+    
+    datatable(
+      data %>%
+        select(City = city, Province = province,
+               `Temp (°C)` = weekly_avg_temp,
+               `Humidity (%)` = weekly_avg_humidity,
+               `Heat Index` = calculated_heat_index,
+               `ML Predicted` = predicted_category,
+               `Threshold` = threshold_category),
+      options = list(
+        pageLength = 10, 
+        dom = 'ftp', 
+        ordering = TRUE,
+        scrollX = TRUE,
+        autoWidth = TRUE,
+        columnDefs = list(
+          list(width = '90px', targets = 0),
+          list(width = '80px', targets = 1),
+          list(width = '45px', targets = 2),
+          list(width = '45px', targets = 3),
+          list(width = '45px', targets = 4),
+          list(width = '90px', targets = 5),
+          list(width = '90px', targets = 6)
+        )
+      ),
+      rownames = FALSE
+    ) %>%
+      formatStyle("ML Predicted",
+                  backgroundColor = styleEqual(
+                    c("Extreme Danger", "Danger", "Extreme Caution", "Caution", "No Caution"),
+                    c("#ff6666", "#ffcccc", "#ffe0b3", "#ffffcc", "#ccffcc")
+                  )
+      )
+  })
+  
+  #plot
+  output$risk_weekly_plot <- renderPlotly({
+    if(!exists("rf_model")) return(NULL)
+    
+    data <- weekly_avg_data()
+    data$predicted <- predict(rf_model, newdata = data.frame(
+      temperature_c = data$weekly_avg_temp,
+      humidity_percent = data$weekly_avg_humidity,
+      hour = data$weekly_avg_hour
+    ))
+    
+    plot_data <- data %>%
+      group_by(predicted) %>%
+      summarise(count = n(), .groups = "drop") %>%
+      mutate(predicted = factor(predicted, 
+                                levels = c("Extreme Danger", "Danger", "Extreme Caution", "Caution", "No Caution")))
+    
+    colors <- c("Extreme Danger" = "#8B0000", "Danger" = "#ff4444",
+                "Extreme Caution" = "#ff9933", "Caution" = "#ffcc00",
+                "No Caution" = "#66cc66")
+    
+    plot_ly(plot_data, x = ~predicted, y = ~count, type = "bar",
+            marker = list(color = colors[as.character(plot_data$predicted)]),
+            text = ~count, textposition = "auto",
+            hovertemplate = "<b>%{x}</b><br>Cities: %{y}<extra></extra>") %>%
+      layout(title = "Weekly Risk Distribution (7-Day Average)",
+             xaxis = list(title = "PAGASA Category"),
+             yaxis = list(title = "Number of Cities", dtick = 1))
+  })
+  
   #PREDICTION++++++++++++++++++++++++++++++++++++++++++++
   observeEvent(input$predict_btn, {
-    if(exists("lm_model")) {
+    if(exists("lr_model")) {
       current_hour <- as.numeric(format(Sys.time(), "%H"))
       new_data <- data.frame(
         temperature_c = input$temp_input,
         humidity_percent = input$humidity_input,
         hour = current_hour
       )
-      predicted_hi <- predict(lm_model, newdata = new_data)
+      predicted_hi <- predict(lr_model, newdata = new_data)
       category <- get_category(predicted_hi)
       output$prediction_result <- renderText({
         paste("Predicted Heat Index:", round(predicted_hi, 1), "°C\nDanger Category:", category)
