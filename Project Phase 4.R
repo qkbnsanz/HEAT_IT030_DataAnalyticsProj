@@ -659,7 +659,7 @@ class_data <- clean_data %>%
 
 #get available categories
 available_categories <- levels(class_data$heat_danger_category)
-cat("\n\n========== MODEL 2: CLASSIFICATION (Random Forest) ==========\n\n--- Available Categories in Current Data ---\n")
+cat("\n\n========== MODEL 1: CLASSIFICATION (Random Forest) ==========\n\n--- Available Categories in Current Data ---\n")
 print(table(class_data$heat_danger_category))
 
 #proceed if there are at least 2 categories
@@ -739,7 +739,7 @@ coef_table$p_value_formatted <- ifelse(coef_table$p_value < 0.001,
                                        "< 0.001", 
                                        round(coef_table$p_value, 3))
 
-cat("\n\n========== MODEL 3: LINEAR REGRESSION ==========\n\n   R-squared:", round(lm_summary$r.squared, 4), 
+cat("\n\n========== MODEL 2: LINEAR REGRESSION ==========\n\n   R-squared:", round(lm_summary$r.squared, 4), 
     "→ Model explains", round(lm_summary$r.squared * 100, 1), 
     "% of variation\n   Adjusted R-squared:", round(lm_summary$adj.r.squared, 4),
     "\n\nVARIABLE EFFECTS (How each factor affects Heat Index)\n" , rep("-", 50), sep = "", "\n", 
