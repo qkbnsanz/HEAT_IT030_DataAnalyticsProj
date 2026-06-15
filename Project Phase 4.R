@@ -9,7 +9,6 @@ library(weathermetrics)
 library(zoo)
 library(moments)
 library(caret)
-library(forecast)
 library(randomForest)
 
 #====data frame for ncr=======
@@ -648,69 +647,6 @@ ggsave("chart_distribution.png", plot_distribution, width = 10, height = 6)
 plot_distribution
 
 #=========PHASE 4: MODEL DEV===========
-
-#Time Series Forecast Model+++++++++++++++++++++++++
-cat("\n========== MODEL 1: TIME SERIES FORECAST USING ETS ==========\n")
-
-#get hottest city from phase3 q4
-hottest_city_now <- q4_result_all$city[1]
-hottest_avg <- q4_result_all$rolling_avg[1]
-
-cat("\n--- Current Conditions ---\n")
-cat("Hottest city:", hottest_city_now, "\n")
-cat("Current 7-day rolling average:", round(hottest_avg, 1), "°C\n")
-
-#get daily average data
-hottest_data <- clean_data %>%
-  filter(city == hottest_city_now) %>%
-  group_by(date) %>%
-  summarise(daily_avg_heat = mean(heat_index_c, na.rm = TRUE), .groups = "drop") %>%
-  arrange(date)
-
-if(nrow(hottest_data) >= 7) {
-  #create time series object
-  hottest_ts <- ts(hottest_data$daily_avg_heat, frequency = 7)
-  
-  #Exponential Smoothing model
-  ets_model <- ets(hottest_ts)
-  
-  cat("======= MODEL 1: TIME SERIES FORECAST USING ETS =====")
-  cat("\n--- Model Information ---\n")
-  cat("Model type:", ets_model$method, "\n")
-  cat("Smoothing parameter (alpha):", round(ets_model$par["alpha"], 3), 
-      "- gives", round(ets_model$par["alpha"] * 100, 1), "% weight to recent data\n")
-  
-  #forecast next 7 days
-  ets_forecast <- forecast(ets_model, h = 7)
-  
-  #plot
-  plot_ets <- autoplot(ets_forecast) +
-    labs(title = paste("7-Day Heat Index Forecast for", hottest_city_now),
-         subtitle = paste("Exponential Smoothing (ETS) | Current 7-day avg:", round(hottest_avg, 1), "°C"),
-         x = "Day", y = "Heat Index (°C)") +
-    theme_minimal()
-  
-  ggsave(paste0("forecast_7day_", gsub(" ", "_", hottest_city_now), ".png"), 
-         plot_ets, width = 10, height = 6)
-  print(plot_ets)
-  
-  #model eval
-  rmse_value <- round(sqrt(mean(ets_model$residuals^2, na.rm = TRUE)), 2)
-  
-  cat("\n--- Model Evaluation ---\n")
-  cat("RMSE:", rmse_value, "°C\n")
-  
-  #display forecast values
-  cat("\n--- 7-Day Forecast ---\n")
-  for(i in 1:7) {
-    cat("Day", i, ":", round(ets_forecast$mean[i], 1), "°C\n")
-  }
-  
-} else {
-  cat("Not enough data for", hottest_city_now, "- need at least 7 days\n")
-}
-
-
 #Classification Model+++++++++++++++++++++++++
 #prepare data (get available h.i. danger categories lang kasi d pwedeng walang laman sa random forest)
 class_data <- clean_data %>%
@@ -850,10 +786,7 @@ ggsave("regression_actual_vs_predicted.png", plot_lm, width = 8, height = 6)
 print(plot_lm)
 
 #============save models for dashboard==========
-#ets
-if(exists("ets_model")) {
-  saveRDS(ets_model, "ets_model.rds")
-}
+
 #classification
 if(exists("rf_model")) {
   saveRDS(rf_model, "classification_model.rds")
